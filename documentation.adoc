@@ -69,7 +69,7 @@ La difficulté centrale est qu'un même patronyme peut s'écrire de multiples fa
 
 === Architecture globale du pipeline
 
-Le projet est organisé en 7 étapes séquentielles :
+Le projet est organisé en 6 étapes séquentielles orchestrées par `main.py` :
 
 [source,text]
 ----
@@ -77,28 +77,27 @@ names.json + origins.json (Geneanet)
          │
          ▼
 [Étape 1] Union-Find ──────────────────► clusters.json
-         │
+         │                                (ClusteringService)
          ▼
 [Étape 2] Résumés Mistral AI ──────────► final_database.json
-         │
-         ▼                    prenoms.com (scraping)
-[Étape 3] Scraping prénoms ────────────► prenoms_database.json
-         │
+         │                                (SummarizationService)
          ▼            noms2008nat_txt.txt (INSEE)
-[Étape 4] Intégration INSEE ───────────► insee_database.json
-         │
+[Étape 3] Intégration INSEE ───────────► insee_database.json
+         │                                (INSEEService)
          ▼
-[Étape 5] Soundex + Levenshtein ───────► full_database.json (218 982 entrées)
-         │
+[Étape 4] Soundex + Levenshtein ───────► full_database.json
+         │                                (PhoneticService)
          ▼
-[Étape 6] NER extraction ──────────────► nouveaux_noms.json + evaluation.json
-         │
+[Étape 5] NER extraction ──────────────► nouveaux_noms.json
+         │                                (ExtractionService)
          ▼
-[Étape 7] Normalisation ───────────────► full_database_v2.json + variantes_regionales.json
-         │
+[Étape 6] Normalisation ───────────────► full_database_v2.json
+         │                                (NormalizationService)
          ▼
-[app.py]  Interface Streamlit ◄─────────────────────────────────────────────
+[app.py]  Interface Streamlit ─────────► 215,910 noms accessibles
 ----
+
+NOTE: Le pipeline implémente un système de *caching intelligent* : chaque étape vérifie si son fichier de sortie existe déjà. Si oui, elle est automatiquement ignorée (sauf avec `--force`). Cela évite de relancer les étapes coûteuses comme la summarization Mistral (15-30 minutes).
 
 ''''
 
@@ -160,37 +159,133 @@ plotly                # Graphiques interactifs
 pandas                # Manipulation de données
 ----
 
+=== Architecture modulaire
+
+Le projet a été refactorisé selon une *architecture orientée objet modulaire* pour améliorer la maintenabilité, la testabilité et les performances.
+
+==== Principes de conception
+
+* *Point d'entrée unique* : `main.py` orchestre l'exécution de tout le pipeline
+* *Configuration centralisée* : `src/config.py` gère toutes les variables d'environnement et paramètres
+* *Services indépendants* : Chaque étape du pipeline = 1 classe dans `src/services/`
+* *Caching intelligent* : Skip automatique si le fichier de sortie existe déjà (sauf `--force`)
+* *Prompts externalisés* : Fichiers `.txt` modifiables sans toucher au code Python
+* *Utilitaires réutilisables* : Fonctions communes dans `src/utils/`
+
+==== Pipeline orchestrator
+
+La classe `NLPNameOriginsPipeline` (dans `src/pipeline.py`) implémente le pattern *Orchestrator* :
+
+[source,python]
+----
+class NLPNameOriginsPipeline:
+    def __init__(self, config: Config):
+        self.config = config
+        # Initialisation des services
+    
+    def run(self, steps_to_run: List[int], force: bool = False):
+        # Exécute les étapes demandées dans l'ordre
+        for step in steps_to_run:
+            self._run_step(step, force)
+    
+    def _run_step(self, step: int, force: bool):
+        # Vérifie si le fichier output existe
+        if file_exists(output_path) and not force:
+            print(f"[SKIP] Étape {step}")
+            return
+        # Sinon exécute le service correspondant
+        result = self.services[step].execute()
+        save_json(result, output_path)
+----
+
+==== Avantages
+
+[cols="1,3", options="header"]
+|===
+| Bénéfice | Description
+
+| *Maintenance*
+| Modifier un service n'affecte pas les autres modules
+
+| *Testabilité*
+| Chaque service peut être testé indépendamment avec des mocks
+
+| *Performance*
+| Le caching évite de relancer les étapes coûteuses (Mistral = 15-30 min)
+
+| *Flexibilité*
+| `--steps 1,3,5` permet d'exécuter seulement certaines étapes
+
+| *Configuration*
+| Modifier les prompts Mistral sans toucher au code Python
+
+| *Réutilisabilité*
+| Les utilitaires (`text_utils`, `file_utils`) sont partagés
+|===
+
+==== Structure des services
+
+Chaque service hérite d'une interface commune :
+
+[source,python]
+----
+class BaseService:
+    def __init__(self, config: Config):
+        self.config = config
+    
+    def execute(self, *args, **kwargs):
+        raise NotImplementedError
+----
+
+Services disponibles :
+
+* `ClusteringService` : Algorithme Union-Find
+* `SummarizationService` : Résumés Mistral AI avec prompts externalisés
+* `INSEEService` : Intégration données INSEE
+* `PhoneticService` : Soundex + Levenshtein
+* `ExtractionService` : NER extraction de variantes
+* `NormalizationService` : Fusion noms composés
+* `VariantExtractionService` : Extraction variantes cachées
+
 === Structure des fichiers
 
 [source,text]
 ----
 NLP-nameOrigins/
 ├── data/
-│   ├── names.json                  ← 21 777 noms de famille (fourni)
-│   ├── origins.json                ← 20 981 textes étymologiques (fourni)
-│   └── noms2008nat_txt.txt         ← 218 982 noms INSEE
-├── output/
-│   ├── clusters.json               ← groupes Union-Find
-│   ├── final_database.json         ← base Geneanet résumée
-│   ├── prenoms_raw.json            ← prénoms bruts (intermédiaire)
-│   ├── prenoms_database.json       ← prénoms avec origines
-│   ├── insee_database.json         ← base INSEE enrichie
-│   ├── full_database.json          ← base complète 218 982 entrées
-│   ├── full_database_v2.json       ← base avec noms composés fusionnés
-│   ├── nouveaux_noms.json          ← variantes extraites par NER
-│   ├── evaluation.json             ← métriques d'évaluation NER
-│   └── variantes_regionales.json   ← variantes régionales confirmées
-├── etape1_clustering.py
-├── etape2_summarize.py
-├── etape3_prenoms.py
-├── etape4_insee.py
-├── etape5_phonetique.py
-├── etape6_extraction_noms.py
-├── etape7_normalisation.py
-├── recherche.py
-├── app.py
-├── test_mistral.py
-├── .env
+│   ├── names.json                     ← 21 777 noms de famille (fourni)
+│   ├── origins.json                   ← 20 981 textes étymologiques (fourni)
+│   └── noms2008nat_txt.txt            ← 218 982 noms INSEE
+├── output/                            ← Fichiers générés par le pipeline
+│   ├── clusters.json                  ← groupes Union-Find (étape 1)
+│   ├── final_database.json            ← base Geneanet résumée (étape 2)
+│   ├── insee_database.json            ← base INSEE enrichie (étape 3)
+│   ├── full_database.json             ← base avec matches phonétiques (étape 4)
+│   ├── nouveaux_noms.json             ← variantes extraites NER (étape 5)
+│   └── full_database_v2.json          ← base finale normalisée (étape 6)
+├── src/                               ← Architecture modulaire OOP
+│   ├── config.py                      ← Configuration centralisée
+│   ├── pipeline.py                    ← Orchestrateur avec caching intelligent
+│   ├── models/
+│   │   └── name_input.py              ← Modèle de données
+│   ├── services/
+│   │   ├── clustering_service.py      ← Union-Find
+│   │   ├── summarization_service.py   ← Résumés Mistral AI
+│   │   ├── insee_service.py           ← Intégration INSEE
+│   │   ├── phonetic_service.py        ← Soundex + Levenshtein
+│   │   ├── extraction_service.py      ← Extraction NER
+│   │   ├── normalization_service.py   ← Noms composés + normalisation
+│   │   └── variant_extraction_service.py ← Extraction variantes cachées
+│   ├── utils/
+│   │   ├── file_utils.py              ← Gestion JSON
+│   │   ├── text_utils.py              ← Normalisation texte
+│   │   └── prompt_loader.py           ← Chargement prompts
+│   └── prompts/
+│       ├── summarization_system.txt   ← Prompt système Mistral
+│       └── summarization_user.txt     ← Prompt utilisateur Mistral
+├── main.py                            ← Point d'entrée unique du pipeline
+├── app.py                             ← Interface Streamlit
+├── .env                               ← Clé API Mistral
 ├── .gitignore
 └── requirements.txt
 ----
@@ -1130,38 +1225,40 @@ def ajouter_historique(query):
 | 1 — Clustering
 | Union-Find
 | 21 777 noms + 20 981 origines
-| 1 030 groupes de variantes
+| 20 597 groupes de variantes
 
 | 2 — Résumés
 | Mistral AI
 | 372 clusters multi-textes
 | 372 résumés fusionnés
 
-| 3 — Prénoms
+| 2 — Prénoms
 | Scraping BeautifulSoup
 | prenoms.com
 | 11 455 prénoms + origines
 
-| 4 — INSEE
+| 3 — INSEE
 | Lecture fichier TSV
 | 218 982 noms INSEE
-| Fréquences décennales
+| Fréquences décennales ajoutées
 
-| 5 — Phonétique
-| Soundex + Levenshtein + Mistral
+| 4 — Phonétique
+| Soundex + Levenshtein
 | 201 771 noms sans origine
-| 96.7% couverts
+| 189 454 matches trouvés
 
-| 6 — NER
-| Regex + Mistral
+| 5 — Extraction
+| NER Regex
 | 20 981 textes
-| F1 = 69.2%
+| 25 567 nouveaux noms extraits
 
-| 7 — Normalisation
-| Agglutination + Soundex + Mistral
+| 6 — Normalisation
+| Agglutination + fusion composés
 | full_database.json
-| 2 688 fusions + 31 variantes régionales
+| 2 688 groupes fusionnés
 |===
+
+NOTE: Le pipeline a été refactorisé avec une architecture modulaire OOP. Les 6 étapes sont désormais orchestrées par `main.py` avec caching intelligent.
 
 === Couverture finale de la base
 
@@ -1170,19 +1267,22 @@ def ajouter_historique(query):
 | Métrique | Valeur
 
 | Noms de famille total
-| 218 982
+| 215 910
 
 | Noms avec origine étymologique
-| 211 683 (96.7%)
+| ~207 000 (95.9%)
 
-| Prénoms
-| 11 455
+| Groupes de variantes Union-Find
+| 20 597
 
-| Personnes couvertes (fréquences)
-| 73 470 900
+| Variantes phonétiques détectées
+| 189 454 (Soundex + Levenshtein)
 
-| Groupes de variantes identifiés
-| 1 030 + 2 688 composés + 31 régionaux
+| Noms composés fusionnés
+| 2 688 groupes
+
+| Nouveaux noms extraits (NER)
+| 25 567
 |===
 
 === Analyse des performances NER
@@ -1197,6 +1297,27 @@ Pour améliorer le rappel, une piste serait d'utiliser un modèle de NER fine-tu
 ''''
 
 == Perspectives d'amélioration
+
+=== Améliorations accomplies
+
+[cols="1,3", options="header"]
+|===
+| Amélioration | Description
+
+| ✅ Architecture modulaire
+| Refactoring complet en OOP avec services indépendants et réutilisables
+
+| ✅ Caching intelligent
+| Système de skip automatique pour éviter les re-calculs coûteux
+
+| ✅ Prompts externalisés
+| Fichiers `.txt` modifiables à la volée sans toucher au code
+
+| ✅ Configuration centralisée
+| Classe `Config` unique pour tous les paramètres
+|===
+
+=== Améliorations futures
 
 [cols="1,3,1", options="header"]
 |===
@@ -1216,6 +1337,10 @@ Pour améliorer le rappel, une piste serait d'utiliser un modèle de NER fine-tu
 
 | Noms étrangers
 | Espagnols, italiens, arabes, vietnamiens présents en France
+| Moyenne
+
+| Tests unitaires
+| Suite de tests pytest pour chaque service
 | Moyenne
 
 | Déploiement cloud
@@ -1244,18 +1369,26 @@ python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
 
-# Pipeline complet
-python etape1_clustering.py
-python etape2_summarize.py
-python etape3_prenoms.py
-python etape4_insee.py
-python etape5_phonetique.py
-python etape6_extraction_noms.py
-python etape7_normalisation.py
+# Pipeline complet (toutes les étapes)
+python main.py
 
-# Interfaces
-streamlit run app.py      # Interface web → localhost:8501
-python recherche.py       # Interface CLI
+# Pipeline avec étapes spécifiques
+python main.py --steps 1, 2, 3, 5, 6    
+python main.py --steps 4        # Seulement phonétique
+
+# Forcer la ré-exécution (bypass cache)
+python main.py --force          # Re-génère tous les fichiers output/  si pas de fichiers présents
+
+# Les 6 étapes du pipeline :
+# 1. Clustering       → Regroupe les noms par origine (Union-Find)
+# 2. Summarization    → Résume les textes avec Mistral AI
+# 3. INSEE            → Intègre la base INSEE
+# 4. Phonétique       → Détecte variantes Soundex + Levenshtein
+# 5. Extraction       → Extrait nouveaux noms (NER)
+# 6. Normalisation    → Fusionne noms composés
+
+# Interface web
+streamlit run app.py      # → localhost:8501
 ----
 
 === Annexe B — Exemples de recherches

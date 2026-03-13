@@ -1,0 +1,206 @@
+# NLP-nameOrigins : Présentation du Projet
+
+## 🎯 Objectif
+
+Construire automatiquement une **base de données étymologique** des noms de famille français en identifiant et regroupant leurs **variantes orthographiques et phonétiques** à partir de sources hétérogènes (Geneanet, INSEE).
+
+**Problème résolu** : Un même nom peut s'écrire différemment selon les régions et époques
+- Durand / Durant / Duran
+- Lefebvre / Lefeuvre / Lefèvre
+- Le Goff / Legoff / Le-Goff
+
+---
+
+## 📊 Méthodes NLP Utilisées
+
+| Technique | Outil | Usage |
+|-----------|-------|-------|
+| **Union-Find** | Python natif | Regrouper noms partageant la même origine |
+| **Soundex** | jellyfish | Détecter variantes phonétiques (même prononciation) |
+| **Levenshtein** | python-Levenshtein | Détecter variantes orthographiques (fautes, 1-2 lettres) |
+| **NER Regex** | re | Extraire noms cachés dans textes étymologiques |
+| **Mistral AI** | API OpenAI | Résumer textes multiples, valider extractions |
+
+---
+
+## 🔄 Pipeline en 6 Étapes
+
+### **Étape 1 : Clustering (Union-Find)**
+**Objectif** : Regrouper les noms qui partagent le même texte d'origine
+
+**Méthode** : Algorithme Union-Find pour créer des groupes de variantes
+
+**Exemple** :
+```
+Input : 
+- "durand" → origine O1234
+- "durant" → origine O1234
+- "duran"  → origine O1234
+
+Output : 
+Cluster #1: ["durand", "durant", "duran"] → origine O1234
+```
+
+**Résultat** : 20,597 clusters créés
+
+---
+
+### **Étape 2 : Résumé (Mistral AI)**
+**Objectif** : Fusionner les textes d'origine multiples en un seul résumé cohérent
+
+**Méthode** : Mistral AI avec prompts externalisés (fichiers .txt)
+
+**Exemple** :
+```
+Input : Cluster avec 3 textes différents
+- Texte 1: "Durand vient du germanique 'dur' (résistant)..."
+- Texte 2: "Nom fréquent en Bretagne, forme Durant..."
+- Texte 3: "Variante Duran dans le Sud-Ouest..."
+
+Output : 
+"Nom d'origine germanique 'dur' (résistant). 
+Variantes : Durant (Bretagne), Duran (Sud-Ouest)."
+```
+
+**Résultat** : 372 résumés générés (15-30 min avec API)
+
+---
+
+### **Étape 3 : Intégration INSEE**
+**Objectif** : Enrichir la base avec les fréquences par décennie (1891-2000)
+
+**Méthode** : Lecture fichier TSV officiel INSEE (218,982 noms)
+
+**Exemple** :
+```
+Input : "MARTIN" dans fichier INSEE
+- 1891-1900: 12,453 naissances
+- 1901-1910: 13,201 naissances
+- ...
+- 1991-2000: 18,742 naissances
+
+Output : 
+{
+  "name": "martin",
+  "frequencies": {"1891_1900": 12453, ...},
+  "total": 156789
+}
+```
+
+**Résultat** : 218,982 noms enrichis avec données démographiques
+
+---
+
+### **Étape 4 : Phonétique (Soundex + Levenshtein)**
+**Objectif** : Trouver des variantes phonétiques pour noms sans origine
+
+**Méthode** : 
+- Soundex pour encoder phonétiquement
+- Levenshtein (distance ≤ 2) pour fautes d'orthographe
+
+**Exemple** :
+```
+"lefebvre" sans origine → cherche variantes
+
+Soundex: L116
+  → "lefèvre" (L116) ✅ match phonétique
+  → "lefevre" (L116) ✅ match phonétique
+  
+Levenshtein(lefebvre, lefeuvre) = 2
+  → ✅ match orthographique
+  
+→ Copie l'origine de "lefèvre" vers "lefebvre"
+```
+
+**Résultat** : 189,454 matches trouvés (180,819 Soundex + 8,635 Levenshtein)
+
+---
+
+### **Étape 5 : Extraction NER**
+**Objectif** : Extraire nouveaux noms mentionnés dans les textes étymologiques
+
+**Méthode** : Regex basée sur les majuscules et marqueurs ("variante de", "voir", "également")
+
+**Exemple** :
+```
+Texte : "Variante de Bidault, voir aussi Bideau et Bidou"
+
+Regex détecte:
+- "Bidault" (après "variante de")
+- "Bideau" (après "voir aussi")  
+- "Bidou" (après "et")
+
+→ Ajoute ces 3 noms avec référence au texte original
+```
+
+**Résultat** : 25,567 nouveaux noms extraits
+
+---
+
+### **Étape 6 : Normalisation**
+**Objectif** : Fusionner les noms composés (agglutination/séparation)
+
+**Méthode** : Détection des patterns "Le X" / "LeX" / "Le-X"
+
+**Exemple** :
+```
+Noms détectés:
+- "le goff"  (fréquence: 8,234)
+- "legoff"   (fréquence: 12,567)
+- "le-goff"  (fréquence: 2,103)
+
+→ Fusion en 1 groupe "le goff"
+→ Fréquence totale: 22,904
+→ Variantes: ["legoff", "le-goff"]
+```
+
+**Résultat** : 2,688 groupes de noms composés fusionnés
+
+---
+
+## 🏗️ Organisation du Projet
+
+### **Architecture Modulaire OOP**
+
+```
+main.py                    ← Point d'entrée unique
+    ↓
+src/pipeline.py            ← Orchestrateur avec caching
+    ↓
+src/services/              ← 6 services indépendants
+    ├── clustering_service.py
+    ├── summarization_service.py
+    ├── insee_service.py
+    ├── phonetic_service.py
+    ├── extraction_service.py
+    └── normalization_service.py
+```
+
+### **Avantages**
+
+✅ **Caching intelligent** : Skip automatique si fichier existe (sauf --force)  
+✅ **Prompts externalisés** : Modifier Mistral sans toucher au code Python  
+✅ **Configuration centralisée** : Toutes les variables dans src/config.py  
+✅ **Testable** : Chaque service indépendant  
+
+### **Utilisation**
+
+```bash
+# Pipeline complet
+python main.py
+
+# Étapes spécifiques
+python main.py --steps 1,2,3
+
+# Forcer re-calcul
+python main.py --force
+```
+
+---
+
+## 📈 Résultats Finaux
+
+- **215,910 noms** dans la base finale
+- **~95.9% de couverture** étymologique
+- **Interface Streamlit** pour recherche interactive
+- **Temps d'exécution** : 20-40 minutes (selon Mistral API)
