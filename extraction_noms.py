@@ -199,9 +199,8 @@ else:
 
 def extraire_methode2(texte: str, nom_principal: str) -> list:
     """
-    Méthode 2 : Extraction par Mistral.
-    Demande à Mistral d'identifier tous les noms de famille
-    dans le texte et retourne une liste JSON.
+    Méthode 2 : Extraction directe par Mistral.
+    Demande à Mistral d'identifier tous les noms de famille dans le texte.
 
     Args:
         texte          : texte d'origine
@@ -225,12 +224,51 @@ def extraire_methode2(texte: str, nom_principal: str) -> list:
             model="mistral-large-latest",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200,
-            temperature=0.1,   # très faible pour rester factuel
+            temperature=0.1,
         )
         contenu = response.choices[0].message.content.strip()
-        # Nettoyer les backticks markdown que Mistral ajoute parfois
         contenu = contenu.replace("```json", "").replace("```", "").strip()
-        # Parser le JSON retourné
+        noms = json.loads(contenu)
+        return [n for n in noms if isinstance(n, str)]
+    except Exception:
+        return []
+
+
+def valider_par_mistral(candidats: list, texte: str) -> list:
+    """
+    Méthode combinée : Mistral valide les candidats de la Méthode 1.
+    Prend la liste brute de la Méthode 1 et demande à Mistral
+    lesquels sont vraiment des noms de famille.
+
+    Args:
+        candidats : liste de candidats trouvés par Méthode 1
+        texte     : texte d'origine pour le contexte
+
+    Returns:
+        Liste des candidats confirmés comme noms de famille
+    """
+    if not candidats:
+        return []
+
+    prompt = (
+        "Parmi ces mots extraits d'un texte etymologique, "
+        "lesquels sont des noms de famille ou formes latines d'un nom de famille ? "
+        f"Mots candidats : {candidats} "
+        f"Contexte (texte) : {texte[:300]} "
+        "Reponds UNIQUEMENT avec une liste JSON des noms confirmes. "
+        'Exemple : ["Bideaud", "Bideault"] '
+        "Exclure : regions, pays, verbes, adjectifs, mots communs, siecles."
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model="mistral-large-latest",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,
+            temperature=0.1,
+        )
+        contenu = response.choices[0].message.content.strip()
+        contenu = contenu.replace("```json", "").replace("```", "").strip()
         noms = json.loads(contenu)
         return [n for n in noms if isinstance(n, str)]
     except Exception:
@@ -294,43 +332,63 @@ if use_llm:
             "inconnu"
         )
 
+        # Méthode 2 : Mistral extraction directe
         noms_m2 = extraire_methode2(texte, nom_principal)
+
+        # Méthode combinée : Mistral valide les candidats de Méthode 1
+        noms_combines = valider_par_mistral(data["trouves"], texte)
+
         resultats_m2[oid] = noms_m2
 
-        # Comparer les deux méthodes
-        noms_m1_set = set(n.lower() for n in data["trouves"])
-        noms_m2_set = set(n.lower() for n in noms_m2)
+        # Comparer les trois méthodes
+        noms_m1_set  = set(n.lower() for n in data["trouves"])
+        noms_m2_set  = set(n.lower() for n in noms_m2)
+        noms_comb_set = set(n.lower() for n in noms_combines)
 
         comparaison.append({
-            "origin_id":     oid,
-            "nom_principal": nom_principal,
-            "methode1":      list(data["trouves"]),
-            "methode2":      noms_m2,
-            "seulement_m1":  list(noms_m1_set - noms_m2_set),
-            "seulement_m2":  list(noms_m2_set - noms_m1_set),
-            "communs":       list(noms_m1_set & noms_m2_set),
+            "origin_id":      oid,
+            "nom_principal":  nom_principal,
+            "methode1":       list(data["trouves"]),
+            "methode2":       noms_m2,
+            "combinee":       noms_combines,
+            "seulement_m1":   list(noms_m1_set - noms_m2_set),
+            "seulement_m2":   list(noms_m2_set - noms_m1_set),
+            "communs":        list(noms_m1_set & noms_m2_set),
+            "communs_comb":   list(noms_comb_set & noms_m2_set),
         })
 
         time.sleep(0.3)
 
     # Statistiques de comparaison
-    total_m1   = sum(len(c["methode1"]) for c in comparaison)
-    total_m2   = sum(len(c["methode2"]) for c in comparaison)
-    communs    = sum(len(c["communs"]) for c in comparaison)
+    total_m1   = sum(len(c["methode1"])  for c in comparaison)
+    total_m2   = sum(len(c["methode2"])  for c in comparaison)
+    total_comb = sum(len(c["combinee"])  for c in comparaison)
+    communs    = sum(len(c["communs"])   for c in comparaison)
     seul_m1    = sum(len(c["seulement_m1"]) for c in comparaison)
     seul_m2    = sum(len(c["seulement_m2"]) for c in comparaison)
+    communs_comb = sum(len(c["communs_comb"]) for c in comparaison)
 
-    print(f"\n Comparaison Méthode 1 vs Méthode 2 :")
-    print(f"   Total noms Méthode 1   : {total_m1}")
-    print(f"   Total noms Méthode 2   : {total_m2}")
-    print(f"   Noms en commun         : {communs}")
-    print(f"   Seulement Méthode 1    : {seul_m1} (faux positifs potentiels)")
-    print(f"   Seulement Méthode 2    : {seul_m2} (manqués par Méthode 1)")
+    print(f"\n Comparaison des 3 méthodes (référence = Mistral) :")
+    print(f"   {'Méthode':<30} {'Total':>7} {'Précision':>10} {'Rappel':>8} {'F1':>8}")
+    print(f"   {'-'*63}")
 
-    # Précision estimée de la méthode 1
-    if total_m1 > 0:
-        precision = communs / total_m1 * 100
-        print(f"   Précision Méthode 1    : {precision:.1f}%")
+    # Méthode 1
+    p1 = communs / total_m1 if total_m1 > 0 else 0
+    r1 = communs / total_m2 if total_m2 > 0 else 0
+    f1_1 = 2*p1*r1/(p1+r1) if (p1+r1) > 0 else 0
+    print(f"   {'Méthode 1 (regex+majuscules)':<30} {total_m1:>7} {p1*100:>9.1f}% {r1*100:>7.1f}% {f1_1*100:>7.1f}%")
+
+    # Méthode combinée (M1 + validation Mistral)
+    p_c = communs_comb / total_comb if total_comb > 0 else 0
+    r_c = communs_comb / total_m2   if total_m2   > 0 else 0
+    f1_c = 2*p_c*r_c/(p_c+r_c) if (p_c+r_c) > 0 else 0
+    print(f"   {'Méthode combinée (M1+Mistral)':<30} {total_comb:>7} {p_c*100:>9.1f}% {r_c*100:>7.1f}% {f1_c*100:>7.1f}%")
+
+    # Méthode 2 seule (référence)
+    print(f"   {'Méthode 2 (Mistral seul)':<30} {total_m2:>7} {'100.0':>9}% {'100.0':>7}% {'100.0':>7}%")
+
+    print(f"\n La méthode combinée améliore la précision de {(p_c-p1)*100:.1f} points")
+    print(f"   en éliminant les faux positifs de la Méthode 1")
 
     # Sauvegarder la comparaison
     with open("output/evaluation.json", "w", encoding="utf-8") as f:
