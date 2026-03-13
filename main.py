@@ -40,6 +40,12 @@ def main():
         default=None,
         help='Limite de prénoms à scraper (pour tests)'
     )
+
+    parser.add_argument(
+    '--force',
+    action='store_true',
+    help='Force la regeneration des donnees meme si elles existent'
+    )
     
     args = parser.parse_args()
     
@@ -51,7 +57,8 @@ def main():
     # Lancer le pipeline
     steps = None if 'all' in args.steps else args.steps
     pipeline = NLPNameOriginsPipeline(config)
-    pipeline.run(steps=steps)
+    # pipeline.run(steps=steps)
+    pipeline.run(steps=steps, force_regenerate=args.force)
 
 
 if __name__ == "__main__":

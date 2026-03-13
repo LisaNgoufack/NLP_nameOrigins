@@ -1,0 +1,5 @@
+Noms concernés : {variants}
+
+Textes à synthétiser :
+
+{texts}
