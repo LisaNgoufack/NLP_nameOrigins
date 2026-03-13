@@ -37,27 +37,39 @@ Un même nom peut s'écrire différemment selon les régions et les époques :
 ```
 NLP-nameOrigins/
 ├── data/
-│   ├── names.json                ← 21 777 noms de famille (fourni)
-│   ├── origins.json              ← 20 981 textes étymologiques (fourni)
-│   └── noms2008nat_txt.txt       ← 218 982 noms INSEE
-├── output/
-│   ├── clusters.json             ← groupes Union-Find (étape 1)
-│   ├── final_database.json       ← base Geneanet résumée (étape 2)
-│   ├── prenoms_database.json     ← prénoms scrapés (étape 3)
-│   ├── insee_database.json       ← base INSEE enrichie (étape 4)
-│   ├── full_database.json        ← base complète (étape 5)
-│   ├── nouveaux_noms.json        ← variantes extraites NER (étape 6)
-│   └── variantes_regionales.json ← variantes régionales (étape 7)
-├── etape1_clustering.py          ← Union-Find
-├── etape2_summarize.py           ← Résumés Mistral
-├── etape3_prenoms.py             ← Scraping prenoms.com
-├── etape4_insee.py               ← Intégration INSEE
-├── etape5_phonetique.py          ← Soundex + Levenshtein
-├── etape6_extraction_noms.py     ← NER extraction
-├── etape7_normalisation.py       ← Noms composés + variantes régionales
-├── recherche.py                  ← Interface CLI
-├── app.py                        ← Interface Streamlit
-├── .env                          ← Clé API Mistral
+│   ├── names.json                     ← 21 777 noms de famille (fourni)
+│   ├── origins.json                   ← 20 981 textes étymologiques (fourni)
+│   └── noms2008nat_txt.txt            ← 218 982 noms INSEE
+├── output/                            ← Fichiers générés par le pipeline
+│   ├── clusters.json                  ← groupes Union-Find (étape 1)
+│   ├── final_database.json            ← base Geneanet résumée (étape 2)
+│   ├── insee_database.json            ← base INSEE enrichie (étape 3)
+│   ├── full_database.json             ← base avec matches phonétiques (étape 4)
+│   ├── nouveaux_noms.json             ← variantes extraites NER (étape 5)
+│   └── full_database_v2.json          ← base finale normalisée (étape 6)
+├── src/                               ← Architecture modulaire
+│   ├── config.py                      ← Configuration centralisée
+│   ├── pipeline.py                    ← Orchestrateur avec caching intelligent
+│   ├── models/
+│   │   └── name_input.py              ← Modèle de données
+│   ├── services/
+│   │   ├── clustering_service.py      ← Union-Find
+│   │   ├── summarization_service.py   ← Résumés Mistral AI
+│   │   ├── insee_service.py           ← Intégration INSEE
+│   │   ├── phonetic_service.py        ← Soundex + Levenshtein
+│   │   ├── extraction_service.py      ← Extraction NER
+│   │   ├── normalization_service.py   ← Noms composés + normalisation
+│   │   └── variant_extraction_service.py ← Extraction variantes cachées
+│   ├── utils/
+│   │   ├── file_utils.py              ← Gestion JSON
+│   │   ├── text_utils.py              ← Normalisation texte
+│   │   └── prompt_loader.py           ← Chargement prompts
+│   └── prompts/
+│       ├── summarization_system.txt   ← Prompt système Mistral
+│       └── summarization_user.txt     ← Prompt utilisateur Mistral
+├── main.py                            ← Point d'entrée unique du pipeline
+├── app.py                             ← Interface Streamlit
+├── .env                               ← Clé API Mistral
 ├── .gitignore
 └── requirements.txt
 ```
@@ -106,28 +118,41 @@ Copiez `names.json`, `origins.json` et `noms2008nat_txt.txt` dans le dossier `da
 
 ##  Utilisation
 
-### Pipeline complet (dans l'ordre)
+### Pipeline complet
 
+**Exécuter toutes les étapes :**
 ```bash
-python etape1_clustering.py       # Union-Find → clusters.json
-python etape2_summarize.py        # Résumés Mistral → final_database.json
-python etape3_prenoms.py          # Scraping → prenoms_database.json
-python etape4_insee.py            # INSEE → insee_database.json
-python etape5_phonetique.py       # Soundex + Levenshtein → full_database.json
-python etape6_extraction_noms.py  # NER → nouveaux_noms.json
-python etape7_normalisation.py    # Noms composés → full_database_v2.json
+python main.py
 ```
+
+**Exécuter des étapes spécifiques :**
+```bash
+python main.py --steps 1,2,3     # Seulement clustering, summarization, insee
+python main.py --steps 4         # Seulement phonétique
+```
+
+**Forcer la ré-exécution (bypass cache) :**
+```bash
+python main.py --force           # Re-génère tous les fichiers output/
+```
+
+**Options disponibles :**
+- `--steps` : Liste d'étapes à exécuter (1-6), séparées par des virgules
+- `--force` : Force la régénération même si les fichiers existent déjà
+
+**Les 6 étapes du pipeline :**
+1. **Clustering** → Regroupe les noms par origine (Union-Find)
+2. **Summarization** → Résume les textes étymologiques avec Mistral AI
+3. **INSEE** → Intègre la base INSEE avec fréquences
+4. **Phonétique** → Détecte variantes Soundex + Levenshtein
+5. **Extraction** → Extrait nouveaux noms des textes (NER)
+6. **Normalisation** → Fusionne noms composés et variantes
 
 ### Interface web (Streamlit)
 ```bash
 streamlit run app.py
 ```
 Ouvre automatiquement `http://localhost:8501`
-
-### Interface ligne de commande
-```bash
-python recherche.py
-```
 
 ---
 
@@ -153,6 +178,37 @@ python recherche.py
 | Résumé | Mistral AI | Fusionner textes d'origine | 372 résumés |
 | Normalisation | Python natif | Noms composés | 2 688 fusions |
 | Variantes régionales | Soundex + Mistral | Validation régionale | 31 groupes confirmés |
+
+---
+
+##  Architecture
+
+### Design Pattern
+
+Le projet utilise une **architecture modulaire orientée objet** avec :
+
+- **Point d'entrée unique** : `main.py` orchestre tout le pipeline
+- **Configuration centralisée** : `src/config.py` gère variables d'environnement et paramètres
+- **Services indépendants** : Chaque étape = 1 classe dans `src/services/`
+- **Caching intelligent** : Skip automatique si le fichier output existe déjà
+- **Prompts externalisés** : Fichiers `.txt` modifiables sans toucher au code
+
+### Pipeline orchestrator
+
+La classe `NLPNameOriginsPipeline` (dans `src/pipeline.py`) :
+- Charge la configuration une seule fois
+- Exécute les services dans l'ordre correct
+- Détecte si un fichier output existe → **skip automatique**
+- Force la ré-exécution avec `--force`
+- Gère les dépendances entre étapes
+
+### Avantages
+
+✅ **Maintenance facile** : Modifier un service n'affecte pas les autres  
+✅ **Testabilité** : Chaque service peut être testé indépendamment  
+✅ **Performance** : Le caching évite de relancer les étapes longues (Mistral = 15-30 min)  
+✅ **Flexibilité** : Exécuter seulement certaines étapes avec `--steps`  
+✅ **Configuration** : Modifier les prompts Mistral sans toucher au code Python
 
 ---
 
@@ -197,6 +253,10 @@ L'application web offre :
 ##  Dépendances
 
 ```
+anthropic>=0.40.0    # Client API Anthropic (optionnel)
+requests>=2.31.0     # Requêtes HTTP
+beautifulsoup4>=4.12.0  # Parsing HTML
+python-dotenv>=1.0.0 # Variables d'environnement
 openai>=1.0.0        # Client API Mistral (compatible OpenAI)
 python-dotenv        # Variables d'environnement
 requests             # Requêtes HTTP (scraping)
@@ -212,11 +272,14 @@ pandas               # Manipulation de données
 
 ##  Perspectives d'amélioration
 
-- Intégrer les données INSEE post-2000 pour l'évolution jusqu'en 2025
-- Ajouter une vraie carte choroplèthe par département
-- Étendre l'évaluation NER à plus de 200 textes
-- Ajouter des noms étrangers (espagnols, italiens, arabes...)
-- Déployer l'application sur Streamlit Cloud
+- ✅ **Architecture modulaire** : Refactoring complet en OOP avec services indépendants
+- ✅ **Caching intelligent** : Système de skip automatique pour éviter re-calculs
+- ✅ **Prompts externalisés** : Fichiers `.txt` modifiables à la volée
+- 🔲 Intégrer les données INSEE post-2000 pour l'évolution jusqu'en 2025
+- 🔲 Ajouter une vraie carte choroplèthe par département
+- 🔲 Étendre l'évaluation NER à plus de 200 textes
+- 🔲 Ajouter des noms étrangers (espagnols, italiens, arabes...)
+- 🔲 Déployer l'application sur Streamlit Cloud
 
 ---
 
